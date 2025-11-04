@@ -102,7 +102,7 @@ Se desejar substituir também o modelo servindo via Ollama (stack em `/opt/ollam
 ## 5. Prompt de Teste Web3
 Uma checagem rápida após o deploy:
 ```bash
-curl -u able2api:"Able2@2025!Whaz" https://apigenai.whaz.com.br/api/generate \
+curl -u "$OLLAMA_BASIC_USER:$OLLAMA_BASIC_PASS" https://apigenai.whaz.com.br/api/generate \
   -H 'Content-Type: application/json' \
   -d '{
         "model": "web3-qwen-dpo",
@@ -110,6 +110,7 @@ curl -u able2api:"Able2@2025!Whaz" https://apigenai.whaz.com.br/api/generate \
         "stream": false
       }'
 ```
+Use as credenciais válidas configuradas no deploy (variáveis de ambiente ou arquivo seguro).
 
 Se a resposta trouxer conceitos específicos de Web3/DeFi e contextualização prática, o fine-tuning está funcionando conforme esperado.
 
