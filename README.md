@@ -1,216 +1,175 @@
-# Qwen Dual-VPS DPO Playbook
+# Qwen DPO Fine-Tuning PoC
 
-This guide explains how to fine-tune a Qwen model with DPO when you control two VPS machines: one for serving the model without a GPU and another temporary GPU VPS for training and quantization. The same workflow works for any dataset that contains prompt, chosen, and rejected fields.
+Proof of Concept for fine-tuning Qwen 2.5 3B Instruct with DPO (Direct Preference Optimization) focused on Web3, DeFi and Smart Contracts.
 
-## Topology and Conventions
-Deploy VPS hosts the container `qwen-docker-qwen-1`. It exposes only `127.0.0.1:18080` and should not be changed outside the steps in this guide.
+This is a small-scale PoC using a tiny dataset (16 examples). The goal is to validate the full pipeline from training to deployment.
 
-GPU VPS is a temporary machine that has a GPU (for example AWS `g5.xlarge` or Google Cloud `A2`). Use it only for training and converting the model.
+## Infrastructure
 
-The Ollama stack lives at `/opt/ollama-deploy/ollama-stack/`. Leave it untouched.
+| Component | Provider | Specs | Purpose |
+|-----------|----------|-------|---------|
+| Deploy VPS | Contabo (or similar cheap VPS) | 24GB RAM, vCPU | Serve the model via llama.cpp |
+| GPU Instance | RunPod | RTX 2000 Ada | Train DPO and convert to GGUF |
 
-Set the following environment variables before running the commands so the instructions stay generic:
-```
-export DEPLOY_USER=root
-export DEPLOY_HOST=deploy.example.com
-export GPU_USER=ubuntu
-export GPU_HOST=gpu.example.com
-export OLLAMA_DOMAIN=api.yourcompany.com
-```
+## Files
 
-## 1. Prepare the Deploy VPS (no GPU)
-1. Copy the helper script to the server:
-```
-scp setupqwen.sh $DEPLOY_USER@$DEPLOY_HOST:/root/
-ssh $DEPLOY_USER@$DEPLOY_HOST
-chmod +x /root/setupqwen.sh
-```
-2. Edit the variables at the top of `setupqwen.sh` if you need another directory, model name, or download URL. After that run:
-```
+| File | Description |
+|------|-------------|
+| `web3_dpo_dataset.jsonl` | DPO dataset with prompt/chosen/rejected pairs |
+| `train_dpo.py` | Training script using TRL + LoRA |
+| `setupqwen.sh` | Setup script for the deploy VPS |
+
+## Complete Workflow
+
+### Part 1: Setup Deploy VPS (Contabo)
+
+1. SSH into your VPS and run the setup script:
+```bash
+chmod +x setupqwen.sh
 ./setupqwen.sh
 ```
-3. Confirm that the container is running and healthy:
-```
-docker ps | grep qwen
+
+This installs Docker, downloads the base Qwen model, and starts the llama.cpp container.
+
+2. Verify the model is running:
+```bash
 curl http://127.0.0.1:18080/health
-docker compose -f ~/qwen-docker/docker-compose.yml logs -f qwen
-```
-The script sets up Docker, downloads the GGUF file, creates `~/qwen-docker/`, generates a minimal `docker-compose.yml`, launches the `llama-cpp-python` container, and performs a smoke test.
-
-## 2. Prepare Your Dataset
-DPO needs pairs of responses. Convert your raw data to JSONL with the fields `prompt`, `chosen`, and `rejected`.
-```
-python3 - <<'PY'
-import json
-from pathlib import Path
-source = Path('my_raw_dataset.json').read_text()
-data = json.loads(source)
-with Path('my_dpo_dataset.jsonl').open('w') as f:
-    for item in data:
-        f.write(json.dumps({
-            "prompt": item["prompt"],
-            "chosen": item["preferred"],
-            "rejected": item["rejected"],
-        }, ensure_ascii=False) + "\n")
-PY
-```
-Always validate the file:
-```
-python3 -m json.tool my_dpo_dataset.jsonl >/dev/null
 ```
 
-## 3. Workflow on the GPU VPS
-1. Prepare the Python environment:
-```
-ssh $GPU_USER@$GPU_HOST
-sudo apt update && sudo apt install -y python3.10 python3.10-venv git git-lfs
-python3 -m venv ~/venvs/qwen-dpo
-source ~/venvs/qwen-dpo/bin/activate
-pip install --upgrade pip
+### Part 2: Train on GPU (RunPod)
+
+1. Create a RunPod instance with GPU (RTX 2000 Ada or similar). Access via Web Terminal or Jupyter.
+
+2. Install dependencies:
+```bash
+apt update && apt install -y git-lfs
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-pip install trl transformers accelerate datasets peft bitsandbytes
+pip install trl transformers accelerate datasets bitsandbytes peft protobuf==3.20 huggingface_hub
 ```
-2. Clone the repository and copy the dataset:
-```
-mkdir -p ~/qwen-dpo && cd ~/qwen-dpo
+
+3. Clone the repo and download the base model:
+```bash
+mkdir -p /workspace/models && cd /workspace
+git lfs install
+git clone https://huggingface.co/Qwen/Qwen2.5-3B-Instruct models/Qwen2.5-3B-Instruct
+cd models/Qwen2.5-3B-Instruct && git lfs pull && cd /workspace
 git clone https://github.com/taylordamaceno/qwen_dpo_web3.git repo
-scp $DEPLOY_USER@$DEPLOY_HOST:/home/taylao/qwen_dpo_web3/my_dpo_dataset.jsonl data/
-mkdir -p ~/models
-git clone https://huggingface.co/Qwen/Qwen2.5-3B-Instruct ~/models/Qwen2.5-3B-Instruct
 ```
-3. Create `train_dpo.py` with this example (adjust hyperparameters as needed):
-```python
-from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from trl import DPOTrainer, DPOConfig
-import torch
 
-model_name = "/home/ubuntu/models/Qwen2.5-3B-Instruct"
-dataset_path = "data/my_dpo_dataset.jsonl"
-
-ds = load_dataset("json", data_files=dataset_path, split="train")
-
-tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-tokenizer.pad_token = tokenizer.eos_token
-
-bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    quantization_config=bnb,
-    device_map="auto"
-)
-
-config = DPOConfig(
-    output_dir="./checkpoints",
-    per_device_train_batch_size=1,
-    gradient_accumulation_steps=8,
-    learning_rate=5e-6,
-    num_train_epochs=3,
-    logging_steps=10,
-    save_strategy="epoch",
-    bf16=True
-)
-
-trainer = DPOTrainer(
-    model=model,
-    ref_model=None,
-    tokenizer=tokenizer,
-    args=config,
-    beta=0.1,
-    train_dataset=ds
-)
-
-trainer.train()
-trainer.save_model("./checkpoints/final")
-tokenizer.save_pretrained("./checkpoints/final")
+4. Validate the dataset:
+```bash
+python3 -m json.tool --json-lines /workspace/repo/web3_dpo_dataset.jsonl >/dev/null && echo "Dataset OK"
 ```
-4. Launch the training:
+
+5. Download and run the training script:
+```bash
+wget -O /workspace/train_dpo.py "https://raw.githubusercontent.com/taylordamaceno/qwen_dpo_web3/refs/heads/main/train_dpo.py"
+cd /workspace && accelerate launch train_dpo.py
 ```
-accelerate launch train_dpo.py
+
+Training takes about 1 minute for this small dataset. You should see:
 ```
-5. Merge LoRA weights if you used adapters:
+trainable params: 119,734,272 || all params: 3,205,672,960 || trainable%: 3.7351
+...
+Training complete
 ```
-python3 - <<'PY'
+
+6. Merge LoRA weights with base model:
+```bash
+cat > /workspace/merge_lora.py << 'EOF'
 from peft import AutoPeftModelForCausalLM
 from transformers import AutoTokenizer
+import torch
 
-base = "/home/ubuntu/models/Qwen2.5-3B-Instruct"
-adapter = "./checkpoints/final"
+print("Loading adapter...")
+model = AutoPeftModelForCausalLM.from_pretrained(
+    "/workspace/checkpoints/final",
+    device_map="auto",
+    torch_dtype=torch.bfloat16
+)
 
-model = AutoPeftModelForCausalLM.from_pretrained(adapter, device_map="auto")
+print("Merging LoRA weights...")
 model = model.merge_and_unload()
-model.save_pretrained("./merged_model", safe_serialization=True)
 
-tokenizer = AutoTokenizer.from_pretrained(base, use_fast=False)
-tokenizer.save_pretrained("./merged_model")
-PY
-```
-If you performed full fine-tuning, use the produced checkpoints directly.
+print("Saving merged model...")
+model.save_pretrained("/workspace/merged_model", safe_serialization=True)
 
-## 4. Convert and Quantize to GGUF
+tokenizer = AutoTokenizer.from_pretrained("/workspace/models/Qwen2.5-3B-Instruct")
+tokenizer.save_pretrained("/workspace/merged_model")
+
+print("Merge complete!")
+EOF
+
+python3 /workspace/merge_lora.py
 ```
-cd ~/qwen-dpo
+
+7. Convert to GGUF and quantize:
+```bash
+cd /workspace
 git clone https://github.com/ggerganov/llama.cpp.git
 cd llama.cpp
 pip install -r requirements.txt
+python3 convert_hf_to_gguf.py /workspace/merged_model --outfile /workspace/qwen-dpo-fp16.gguf --outtype f16
 
-python convert-hf-to-gguf.py ../merged_model --outfile qwen-dpo-fp16.gguf --model-base qwen
-./quantize qwen-dpo-fp16.gguf qwen-dpo-q4_k_m.gguf q4_k_m
-./llama-cli -m qwen-dpo-q4_k_m.gguf -p "Smoke test here"
+cmake -B build
+cmake --build build --config Release -j
+./build/bin/llama-quantize /workspace/qwen-dpo-fp16.gguf /workspace/qwen-dpo-q4_k_m.gguf q4_k_m
 ```
 
-## 5. Publish on the Deploy VPS
+8. Verify the output:
+```bash
+ls -lh /workspace/*.gguf
 ```
-scp qwen-dpo-q4_k_m.gguf $DEPLOY_USER@$DEPLOY_HOST:/root/
-ssh $DEPLOY_USER@$DEPLOY_HOST
-mkdir -p /root/qwen-docker/models/backup_$(date +%Y%m%d)
-mv /root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf \
-   /root/qwen-docker/models/backup_$(date +%Y%m%d)/
-mv /root/qwen-dpo-q4_k_m.gguf \
-   /root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf
-```
-Keep the file name so the existing `docker-compose.yml` keeps working without changes.
 
-## 6. Restart and Validate
+You should see:
 ```
-docker compose -f /root/qwen-docker/docker-compose.yml restart qwen
-sleep 5
-docker logs qwen-docker-qwen-1 --since=2m
+-rw-rw-rw- 1 root root 5.8G /workspace/qwen-dpo-fp16.gguf
+-rw-rw-rw- 1 root root 1.8G /workspace/qwen-dpo-q4_k_m.gguf
+```
 
-curl http://127.0.0.1:18080/v1/completions \
+9. Download `qwen-dpo-q4_k_m.gguf` via Jupyter Lab (right-click > Download).
+
+10. Terminate the RunPod instance to stop billing.
+
+### Part 3: Deploy to VPS
+
+1. From your local machine, upload the model to the VPS:
+```bash
+scp qwen-dpo-q4_k_m.gguf root@YOUR_VPS_IP:/root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf
+```
+
+2. Restart the container:
+```bash
+ssh root@YOUR_VPS_IP "docker compose -f /root/qwen-docker/docker-compose.yml restart qwen"
+```
+
+3. Test the fine-tuned model:
+```bash
+curl http://127.0.0.1:18080/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"Smoke test after deploy"}'
-```
-If you use a proxy or the Ollama stack, run a remote test too:
-```
-curl -u "$OLLAMA_BASIC_USER:$OLLAMA_BASIC_PASS" https://$OLLAMA_DOMAIN/api/generate \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"web3-qwen-dpo","prompt":"Explain how to evaluate flash-loan risk in DeFi.","stream":false}'
+  -d '{
+    "model": "qwen",
+    "messages": [{"role": "user", "content": "What are the main risks of a flash loan attack in DeFi?"}]
+  }'
 ```
 
-## 7. Optional Example: Neymar Dataset
-The file `dataset_dpo_neymar.json` shows the structure you need. Convert it to JSONL and reuse the same procedure:
-```
-python3 - <<'PY'
-import json
-from pathlib import Path
-content = Path('dataset_dpo_neymar.json').read_text()
-data = json.loads(content)
-with Path('dataset_dpo_neymar.jsonl').open('w') as f:
-    for item in data:
-        f.write(json.dumps({
-            "prompt": item["prompt"],
-            "chosen": item["preferred"],
-            "rejected": item["rejected"],
-        }, ensure_ascii=False) + "\n")
-PY
-```
+## Cost Estimate
 
-## 8. Good Practices
-1. Save hyperparameters, checkpoints, and metrics in files such as `logs/train-YYYYMMDD.md`.
-2. Keep old GGUF backups until the new model passes all tests.
-3. Automate GPU VPS creation and destruction with tools like Ansible or Terraform if you repeat this workflow often.
-4. Secure external endpoints with a proxy and authentication before exposing the model to users.
+| Item | Cost |
+|------|------|
+| RunPod RTX 2000 Ada (~30 min) | ~$0.50 |
+| Contabo VPS (monthly) | ~$10-15 |
 
-Following this flow, you can train any dataset on the GPU VPS, export the GGUF file, and swap it on the Deploy VPS without touching the existing Ollama stack.
+Total PoC cost: less than $1 for GPU training.
 
+## Notes
+
+This is a PoC with a tiny dataset (16 examples). For production:
+1. Use a larger, high-quality dataset (1000+ examples)
+2. Train for more epochs
+3. Evaluate model quality before deploying
+4. Keep backups of the original model
+
+## License
+
+MIT
