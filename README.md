@@ -247,5 +247,5 @@ This is a PoC with a tiny dataset (16 examples). For production:
 4. Keep backups of the original model
 
 ## License
+Taylor Damaceno
 
-MIT
