@@ -26,7 +26,8 @@ config = DPOConfig(
     num_train_epochs=3,
     logging_steps=5,
     save_strategy="epoch",
-    bf16=True
+    bf16=True,
+    beta=0.1
 )
 
 trainer = DPOTrainer(
@@ -34,7 +35,6 @@ trainer = DPOTrainer(
     ref_model=None,
     processing_class=tokenizer,
     args=config,
-    beta=0.1,
     train_dataset=ds
 )
 
