@@ -160,7 +160,13 @@ srv  update_slots: all slots are idle
 
 ### Part 4: Test the Fine-Tuned Model
 
-Run this command from the VPS (after SSH) or from your local machine (using the full `ssh` prefix):
+**Important:** The model listens only on `127.0.0.1:18080` inside the VPS for security. You must SSH into the Contabo VPS first, then run the tests.
+
+```bash
+ssh root@YOUR_VPS_IP
+```
+
+Once inside the VPS, run the tests:
 
 **Test 1: Flash Loan Risks (DeFi topic from training)**
 ```bash
@@ -198,22 +204,27 @@ If you kept a backup of the original model, you can compare responses to see the
 
 If the model doesn't respond or gives errors:
 
-1. Check container logs:
+1. **SSH into the VPS first** (all commands below run inside the Contabo VPS):
+```bash
+ssh root@YOUR_VPS_IP
+```
+
+2. Check container logs:
 ```bash
 docker logs qwen-docker-qwen-1 --tail 50
 ```
 
-2. Verify the model file size (should be ~1.8G):
+3. Verify the model file size (should be ~1.8G):
 ```bash
 ls -lh /root/qwen-docker/models/
 ```
 
-3. Restart if needed:
+4. Restart if needed:
 ```bash
 docker compose -f /root/qwen-docker/docker-compose.yml restart qwen
 ```
 
-4. Test basic health endpoint:
+5. Test basic health endpoint:
 ```bash
 curl http://127.0.0.1:18080/health
 ```
