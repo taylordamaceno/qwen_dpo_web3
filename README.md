@@ -53,7 +53,7 @@ mkdir -p /workspace/models && cd /workspace
 git lfs install
 git clone https://huggingface.co/Qwen/Qwen2.5-3B-Instruct models/Qwen2.5-3B-Instruct
 cd models/Qwen2.5-3B-Instruct && git lfs pull && cd /workspace
-git clone https://github.com/taylordamaceno/qwen_dpo_web3.git repo
+git clone https://github.com/taylordamaceno/slm-dpo-fine-tuning.git repo
 ```
 
 4. Validate the dataset:
@@ -63,7 +63,7 @@ python3 -m json.tool --json-lines /workspace/repo/web3_dpo_dataset.jsonl >/dev/n
 
 5. Download and run the training script:
 ```bash
-wget -O /workspace/train_dpo.py "https://raw.githubusercontent.com/taylordamaceno/qwen_dpo_web3/refs/heads/main/train_dpo.py"
+wget -O /workspace/train_dpo.py "https://raw.githubusercontent.com/taylordamaceno/slm-dpo-fine-tuning/refs/heads/main/train_dpo.py"
 cd /workspace && accelerate launch train_dpo.py
 ```
 
