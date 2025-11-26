@@ -138,19 +138,84 @@ You should see:
 scp qwen-dpo-q4_k_m.gguf root@YOUR_VPS_IP:/root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf
 ```
 
-2. Restart the container:
+This directly replaces the original model file. The filename must match what's configured in `docker-compose.yml`.
+
+2. Restart the container to load the new model:
 ```bash
 ssh root@YOUR_VPS_IP "docker compose -f /root/qwen-docker/docker-compose.yml restart qwen"
 ```
 
-3. Test the fine-tuned model:
+Wait about 5-10 seconds for the model to load into memory.
+
+3. Verify the container is running:
 ```bash
-curl http://127.0.0.1:18080/v1/chat/completions \
+ssh root@YOUR_VPS_IP "docker logs qwen-docker-qwen-1 --tail 10"
+```
+
+You should see:
+```
+main: server is listening on http://127.0.0.1:18080 - starting the main loop
+srv  update_slots: all slots are idle
+```
+
+### Part 4: Test the Fine-Tuned Model
+
+Run this command from the VPS (after SSH) or from your local machine (using the full `ssh` prefix):
+
+**Test 1: Flash Loan Risks (DeFi topic from training)**
+```bash
+curl -s http://127.0.0.1:18080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "qwen",
-    "messages": [{"role": "user", "content": "What are the main risks of a flash loan attack in DeFi?"}]
-  }'
+    "messages": [{"role": "user", "content": "What are the main risks of a flash loan attack in DeFi?"}],
+    "max_tokens": 200
+  }' | python3 -m json.tool
+```
+
+Expected output should mention:
+- Price manipulation
+- Leverage and margin trading attacks
+- Double spending risks
+- Smart contract vulnerabilities
+
+**Test 2: Smart Contract Topic**
+```bash
+curl -s http://127.0.0.1:18080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen",
+    "messages": [{"role": "user", "content": "Explain how a DAO works and its main components"}],
+    "max_tokens": 200
+  }' | python3 -m json.tool
+```
+
+**Test 3: Compare with Base Model (Optional)**
+
+If you kept a backup of the original model, you can compare responses to see the improvement from DPO training. The fine-tuned model should provide more detailed, technically accurate answers about Web3/DeFi topics.
+
+### Troubleshooting
+
+If the model doesn't respond or gives errors:
+
+1. Check container logs:
+```bash
+docker logs qwen-docker-qwen-1 --tail 50
+```
+
+2. Verify the model file size (should be ~1.8G):
+```bash
+ls -lh /root/qwen-docker/models/
+```
+
+3. Restart if needed:
+```bash
+docker compose -f /root/qwen-docker/docker-compose.yml restart qwen
+```
+
+4. Test basic health endpoint:
+```bash
+curl http://127.0.0.1:18080/health
 ```
 
 ## Cost Estimate
