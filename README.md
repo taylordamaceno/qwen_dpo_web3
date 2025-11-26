@@ -166,18 +166,63 @@ srv  update_slots: all slots are idle
 ssh root@YOUR_VPS_IP
 ```
 
-Once inside the VPS, run the tests:
+Once inside the VPS, run the tests below. All questions are in **Portuguese** (the training dataset language):
 
-**Test 1: Flash Loan Risks (DeFi topic from training)**
+**Test 1: Smart Contracts**
+```bash
+curl -s http://127.0.0.1:18080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "qwen", "messages": [{"role": "user", "content": "O que é um smart contract e como ele funciona?"}], "max_tokens": 300}'
+```
+
+**Test 2: Layer 1 vs Layer 2**
+```bash
+curl -s http://127.0.0.1:18080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "qwen", "messages": [{"role": "user", "content": "Explique a diferença entre Layer 1 e Layer 2 em blockchain"}], "max_tokens": 300}'
+```
+
+**Test 3: DeFi Components**
+```bash
+curl -s http://127.0.0.1:18080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "qwen", "messages": [{"role": "user", "content": "O que é DeFi e quais são seus principais componentes?"}], "max_tokens": 300}'
+```
+
+**Test 4: DAO (Decentralized Autonomous Organization)**
+```bash
+curl -s http://127.0.0.1:18080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "qwen", "messages": [{"role": "user", "content": "Como funciona uma DAO (Organização Autônoma Descentralizada)?"}], "max_tokens": 300}'
+```
+
+**Test 5: Impermanent Loss**
+```bash
+curl -s http://127.0.0.1:18080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "qwen", "messages": [{"role": "user", "content": "O que é impermanent loss em liquidity providing?"}], "max_tokens": 300}'
+```
+
+Expected output should mention:
+- Price manipulation
+- Leverage and margin trading attacks
+- Double spending risks
+- Smart contract vulnerabilities
+
+**Test 2: Smart Contract Topic**
 ```bash
 curl -s http://127.0.0.1:18080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "qwen",
-    "messages": [{"role": "user", "content": "What are the main risks of a flash loan attack in DeFi?"}],
+    "messages": [{"role": "user", "content": "Explain how a DAO works and its main components"}],
     "max_tokens": 200
   }' | python3 -m json.tool
 ```
+
+**Test 3: Compare with Base Model (Optional)**
+
+If you kept a backup of the original model, you can compare responses to see the improvement from DPO training. The fine-tuned model should provide more detailed, technically accurate answers about Web3/DeFi topics.
 
 Expected output should mention:
 - Price manipulation
