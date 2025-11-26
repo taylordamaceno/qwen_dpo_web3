@@ -117,3 +117,42 @@ Se a resposta trouxer conceitos específicos de Web3/DeFi e contextualização p
 ---
 **Dica:** mantenha logs dos parâmetros de treino e versões de quantização para futuras iterações (ex.: `logs/train-$(date).md`). Isso acelera o rollback e comparações de desempenho.
 
+## 6. Exemplo Rápido: DPO Neymar (Ajuda Local com GPU)
+
+Este repositório inclui `dataset_dpo_neymar.json`, um exemplo simples de pares preferido/rejeitado para refinar o Qwen em respostas sobre Neymar. A VPS atual não tem GPU, então rode o DPO em uma máquina local com GPU (ou serviço de nuvem) e apenas sincronize os artefatos com a VPS.
+
+**Passos sugeridos:**
+
+1. **Baixar dataset da VPS (opcional)**  
+   ```bash
+   scp root@77.237.237.228:/home/taylao/qwen_dpo_web3/dataset_dpo_neymar.json .
+   ```
+
+2. **Rodar DPO na máquina com GPU**  
+   Exemplo usando um binário hipotético `llama-dpo` (substitua pelo pipeline da sua preferência, como TRL ou LLaMA-Factory):
+   ```bash
+   ./llama-dpo \
+     --model ./models/qwen.q4_k_m.gguf \
+     --data ./dataset_dpo_neymar.json \
+     --out ./qwen-dpo-neymar.gguf \
+     --epochs 3
+   ```
+   Se estiver usando TRL/LLaMA-Factory, mantenha a estrutura `prompt/preferred/rejected` ao converter para JSONL.
+
+3. **Copiar o modelo ajustado para a VPS**  
+   ```bash
+   scp ./qwen-dpo-neymar.gguf root@77.237.237.228:/root/
+   ```
+   Em seguida, no host remoto, faça backup e substitua:
+   ```bash
+   ssh root@77.237.237.228
+   mkdir -p /root/qwen-docker/models/backup_$(date +%Y%m%d)
+   mv /root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+      /root/qwen-docker/models/backup_$(date +%Y%m%d)/
+   mv /root/qwen-dpo-neymar.gguf \
+      /root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf
+   ```
+
+4. **Reiniciar e validar**  
+   Execute os passos da seção 3.5 para reiniciar o container e testar com prompts específicos sobre Neymar (ex.: “Liste 5 curiosidades interessantes sobre o Neymar.”).
+
