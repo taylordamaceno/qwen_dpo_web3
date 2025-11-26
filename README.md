@@ -7,7 +7,13 @@ Guia enxuto para treinar e disponibilizar uma versão do Qwen afinada com DPO us
 - **Montagem do modelo:** bind `host:/root/qwen-docker/models -> container:/models` (somente leitura).
 - **Stack Ollama oficial:** isolada em `/opt/ollama-deploy/ollama-stack/` via `deploy_ollama_stack.sh`. Não alterar.
 - **Dataset DPO:** `web3_dpo_dataset.jsonl` (prompt, chosen, rejected) neste repositório.
-- **Acesso:** `root@77.237.237.228` (VPS com Docker e suporte a `llama.cpp`).
+- **Acesso:** duas VPS distintas  
+  - **Deploy VPS (sem GPU):** hospeda o container `qwen-docker-qwen-1`.  
+  - **GPU VPS (treino):** máquina temporária apenas para rodar o DPO.
+- **Convenção de variáveis:** defina no shell algo como  
+  `export DEPLOY_USER=root DEPLOY_HOST=deploy.example.com`  
+  `export GPU_USER=ubuntu GPU_HOST=gpu.example.com`  
+  `export OLLAMA_DOMAIN=api.suaempresa.com`.
 
 ## 2. Fluxo em Alto Nível
 1. Preparar dataset localmente.
@@ -24,7 +30,7 @@ Guia enxuto para treinar e disponibilizar uma versão do Qwen afinada com DPO us
    python -m json.tool web3_dpo_dataset.jsonl >/dev/null  # checa formato linha a linha
    ```
 2. Opcional: remover exemplos incompletos e dividir em `train.jsonl` (95%) e `eval.jsonl` (5%) mantendo campos `prompt`, `chosen`, `rejected`.
-3. Enviar para ambiente de treino (ex.: `scp web3_dpo_dataset.jsonl user@gpu-box:/workdir/data/`).
+3. Enviar para ambiente de treino (ex.: `scp web3_dpo_dataset.jsonl $GPU_USER@$GPU_HOST:/workdir/data/`).
 
 ### 3.2 Treinar com DPO
 1. Criar ambiente (ex.: `python -m venv .venv && source .venv/bin/activate`).
@@ -62,13 +68,13 @@ Guia enxuto para treinar e disponibilizar uma versão do Qwen afinada com DPO us
    ```
 
 ### 3.4 Enviar para a VPS e Substituir Modelo
-1. Transferir o arquivo quantizado:
+1. Transferir o arquivo quantizado da GPU VPS para a VPS de deploy:
    ```bash
-   scp web3-qwen-dpo-q4_k_m.gguf root@77.237.237.228:/root/
+   scp web3-qwen-dpo-q4_k_m.gguf $DEPLOY_USER@$DEPLOY_HOST:/root/
    ```
-2. No host remoto, fazer backup e mover o novo modelo mantendo o nome esperado pelo `docker-compose.yml`:
+2. No host remoto de deploy, fazer backup e mover o novo modelo mantendo o nome esperado pelo `docker-compose.yml`:
    ```bash
-   ssh root@77.237.237.228
+   ssh $DEPLOY_USER@$DEPLOY_HOST
    mkdir -p /root/qwen-docker/models/backup_$(date +%Y%m%d)
    mv /root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf \
       /root/qwen-docker/models/backup_$(date +%Y%m%d)/
@@ -102,7 +108,7 @@ Se desejar substituir também o modelo servindo via Ollama (stack em `/opt/ollam
 ## 5. Prompt de Teste Web3
 Uma checagem rápida após o deploy:
 ```bash
-curl -u "$OLLAMA_BASIC_USER:$OLLAMA_BASIC_PASS" https://apigenai.whaz.com.br/api/generate \
+curl -u "$OLLAMA_BASIC_USER:$OLLAMA_BASIC_PASS" https://$OLLAMA_DOMAIN/api/generate \
   -H 'Content-Type: application/json' \
   -d '{
         "model": "web3-qwen-dpo",
@@ -119,16 +125,18 @@ Se a resposta trouxer conceitos específicos de Web3/DeFi e contextualização p
 
 ## 6. Exemplo Rápido: DPO Neymar (Ajuda Local com GPU)
 
-Este repositório inclui `dataset_dpo_neymar.json`, um exemplo simples de pares preferido/rejeitado para refinar o Qwen em respostas sobre Neymar. A VPS atual não tem GPU, então rode o DPO em uma máquina local com GPU (ou serviço de nuvem) e apenas sincronize os artefatos com a VPS.
+Este repositório inclui `dataset_dpo_neymar.json`, um exemplo simples de pares preferido/rejeitado para refinar o Qwen em respostas sobre Neymar. Considere o cenário padrão com **duas VPS**:
+- **Deploy VPS:** roda o container `qwen-docker-qwen-1`, sem GPU.
+- **GPU VPS:** usada temporariamente apenas para o treinamento DPO.
 
 **Passos sugeridos:**
 
-1. **Baixar dataset da VPS (opcional)**  
+1. **Baixar dataset da Deploy VPS (opcional)**  
    ```bash
-   scp root@77.237.237.228:/home/taylao/qwen_dpo_web3/dataset_dpo_neymar.json .
+   scp $DEPLOY_USER@$DEPLOY_HOST:/home/taylao/qwen_dpo_web3/dataset_dpo_neymar.json .
    ```
 
-2. **Rodar DPO na máquina com GPU**  
+2. **Rodar DPO na GPU VPS**  
    Exemplo usando um binário hipotético `llama-dpo` (substitua pelo pipeline da sua preferência, como TRL ou LLaMA-Factory):
    ```bash
    ./llama-dpo \
@@ -139,13 +147,13 @@ Este repositório inclui `dataset_dpo_neymar.json`, um exemplo simples de pares 
    ```
    Se estiver usando TRL/LLaMA-Factory, mantenha a estrutura `prompt/preferred/rejected` ao converter para JSONL.
 
-3. **Copiar o modelo ajustado para a VPS**  
+3. **Copiar o modelo ajustado para a Deploy VPS**  
    ```bash
-   scp ./qwen-dpo-neymar.gguf root@77.237.237.228:/root/
+   scp ./qwen-dpo-neymar.gguf $DEPLOY_USER@$DEPLOY_HOST:/root/
    ```
-   Em seguida, no host remoto, faça backup e substitua:
+   Em seguida, na Deploy VPS, faça backup e substitua:
    ```bash
-   ssh root@77.237.237.228
+   ssh $DEPLOY_USER@$DEPLOY_HOST
    mkdir -p /root/qwen-docker/models/backup_$(date +%Y%m%d)
    mv /root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf \
       /root/qwen-docker/models/backup_$(date +%Y%m%d)/
