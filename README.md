@@ -1,66 +1,51 @@
 # Qwen Dual-VPS DPO Playbook
 
-Manual completo para operar um fluxo de fine-tuning DPO do Qwen usando **duas VPS**: uma para servir o modelo (sem GPU) e outra dedicada apenas ao treinamento com GPU. O processo é independente do dataset — qualquer conjunto de pares `prompt/chosen/rejected` pode ser usado.
+This guide explains how to fine-tune a Qwen model with DPO when you control two VPS machines: one for serving the model without a GPU and another temporary GPU VPS for training and quantization. The same workflow works for any dataset that contains prompt, chosen, and rejected fields.
 
----
+## Topology and Conventions
+Deploy VPS hosts the container `qwen-docker-qwen-1`. It exposes only `127.0.0.1:18080` and should not be changed outside the steps in this guide.
 
-## Topologia e Convenções
+GPU VPS is a temporary machine that has a GPU (for example AWS `g5.xlarge` or Google Cloud `A2`). Use it only for training and converting the model.
 
-- **Deploy VPS (sem GPU):** roda o container `qwen-docker-qwen-1`, expõe apenas `127.0.0.1:18080` e não deve ter sua stack alterada fora do descrito aqui.
-- **GPU VPS (treino):** instância temporária/com GPU (AWS `g5.xlarge`, GCP `A2`, etc.) usada somente para treinar e quantizar.
-- **Stack Ollama:** permanece isolada em `/opt/ollama-deploy/ollama-stack/`; não altere nada ali.
-- **Variáveis sug**eridas (defina no seu shell antes de executar comandos):
-  ```bash
-  export DEPLOY_USER=root
-  export DEPLOY_HOST=deploy.example.com
-  export GPU_USER=ubuntu
-  export GPU_HOST=gpu.example.com
-  export OLLAMA_DOMAIN=api.suaempresa.com
-  ```
+The Ollama stack lives at `/opt/ollama-deploy/ollama-stack/`. Leave it untouched.
 
----
+Set the following environment variables before running the commands so the instructions stay generic:
+```
+export DEPLOY_USER=root
+export DEPLOY_HOST=deploy.example.com
+export GPU_USER=ubuntu
+export GPU_HOST=gpu.example.com
+export OLLAMA_DOMAIN=api.yourcompany.com
+```
 
-## 1. Preparar a Deploy VPS (sem GPU)
-
-### 1.1 Script `setupqwen.sh`
-O repositório inclui `setupqwen.sh`, que instala Docker, baixa o modelo GGUF e sobe o serviço `llama-cpp-python` como container. Use-o para bootstrap rápido ou ajuste conforme necessidade.
-
-**Passos:**
-```bash
+## 1. Prepare the Deploy VPS (no GPU)
+1. Copy the helper script to the server:
+```
 scp setupqwen.sh $DEPLOY_USER@$DEPLOY_HOST:/root/
 ssh $DEPLOY_USER@$DEPLOY_HOST
 chmod +x /root/setupqwen.sh
-# Edite as variáveis no topo do script: QWEN_DIR, MODEL_FILE, MODEL_URL, threads, etc.
+```
+2. Edit the variables at the top of `setupqwen.sh` if you need another directory, model name, or download URL. After that run:
+```
 ./setupqwen.sh
 ```
-
-O script:
-- Garante Docker instalado.
-- Cria `~/qwen-docker/` com subpasta `models/`.
-- Faz download do GGUF indicado em `MODEL_URL` (ou usa o existente).
-- Gera `docker-compose.yml` minimalista com `ghcr.io/abetlen/llama-cpp-python:latest`.
-- Sobe o container expondo apenas `127.0.0.1:$LLM_PORT`.
-- Realiza um `curl` de smoke test em `/v1/chat/completions`.
-
-### 1.2 Checagens pós-setup
-```bash
+3. Confirm that the container is running and healthy:
+```
 docker ps | grep qwen
 curl http://127.0.0.1:18080/health
-docker compose -f ~/qwen-docker/docker-compose.yml logs -f qwen   # se precisar debugar
+docker compose -f ~/qwen-docker/docker-compose.yml logs -f qwen
 ```
+The script sets up Docker, downloads the GGUF file, creates `~/qwen-docker/`, generates a minimal `docker-compose.yml`, launches the `llama-cpp-python` container, and performs a smoke test.
 
----
-
-## 2. Organizar seu Dataset (genérico)
-
-O DPO espera pares de respostas. Crie um JSONL com campos `prompt`, `chosen` (ou `preferred`) e `rejected`. Exemplo de conversão a partir de um JSON comum:
-
-```bash
+## 2. Prepare Your Dataset
+DPO needs pairs of responses. Convert your raw data to JSONL with the fields `prompt`, `chosen`, and `rejected`.
+```
 python3 - <<'PY'
 import json
 from pathlib import Path
-data = json.loads(Path('meu_dataset_raw.json').read_text())
-with Path('meu_dataset_dpo.jsonl').open('w') as f:
+source = Path('my_raw_dataset.json').read_text()
+data = json.loads(source)
+with Path('my_dpo_dataset.jsonl').open('w') as f:
     for item in data:
         f.write(json.dumps({
             "prompt": item["prompt"],
@@ -69,40 +54,31 @@ with Path('meu_dataset_dpo.jsonl').open('w') as f:
         }, ensure_ascii=False) + "\n")
 PY
 ```
-
-Antes de treinar:
-```bash
-python3 -m json.tool meu_dataset_dpo.jsonl >/dev/null
+Always validate the file:
+```
+python3 -m json.tool my_dpo_dataset.jsonl >/dev/null
 ```
 
----
-
-## 3. Fluxo na GPU VPS
-
-### 3.1 Preparar ambiente
-```bash
+## 3. Workflow on the GPU VPS
+1. Prepare the Python environment:
+```
 ssh $GPU_USER@$GPU_HOST
 sudo apt update && sudo apt install -y python3.10 python3.10-venv git git-lfs
 python3 -m venv ~/venvs/qwen-dpo
 source ~/venvs/qwen-dpo/bin/activate
 pip install --upgrade pip
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118  # ajuste p/ sua GPU
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 pip install trl transformers accelerate datasets peft bitsandbytes
 ```
-
-### 3.2 Trazer recursos
-```bash
+2. Clone the repository and copy the dataset:
+```
 mkdir -p ~/qwen-dpo && cd ~/qwen-dpo
 git clone https://github.com/taylordamaceno/qwen_dpo_web3.git repo
-scp $DEPLOY_USER@$DEPLOY_HOST:/home/taylao/qwen_dpo_web3/meu_dataset_dpo.jsonl data/
-# ou copie o dataset direto da sua máquina.
-
+scp $DEPLOY_USER@$DEPLOY_HOST:/home/taylao/qwen_dpo_web3/my_dpo_dataset.jsonl data/
 mkdir -p ~/models
 git clone https://huggingface.co/Qwen/Qwen2.5-3B-Instruct ~/models/Qwen2.5-3B-Instruct
 ```
-
-### 3.3 Rodar DPO (exemplo TRL + LoRA)
-Crie `train_dpo.py` (ajuste hiperparâmetros à sua realidade):
+3. Create `train_dpo.py` with this example (adjust hyperparameters as needed):
 ```python
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -110,7 +86,7 @@ from trl import DPOTrainer, DPOConfig
 import torch
 
 model_name = "/home/ubuntu/models/Qwen2.5-3B-Instruct"
-dataset_path = "data/meu_dataset_dpo.jsonl"
+dataset_path = "data/my_dpo_dataset.jsonl"
 
 ds = load_dataset("json", data_files=dataset_path, split="train")
 
@@ -148,14 +124,12 @@ trainer.train()
 trainer.save_model("./checkpoints/final")
 tokenizer.save_pretrained("./checkpoints/final")
 ```
-
-Execute:
-```bash
+4. Launch the training:
+```
 accelerate launch train_dpo.py
 ```
-
-### 3.4 Mesclar LoRA (se aplicável)
-```bash
+5. Merge LoRA weights if you used adapters:
+```
 python3 - <<'PY'
 from peft import AutoPeftModelForCausalLM
 from transformers import AutoTokenizer
@@ -171,29 +145,22 @@ tokenizer = AutoTokenizer.from_pretrained(base, use_fast=False)
 tokenizer.save_pretrained("./merged_model")
 PY
 ```
+If you performed full fine-tuning, use the produced checkpoints directly.
 
-Se treinou full fine-tuning, use os pesos gerados diretamente.
-
----
-
-## 4. Converter e Quantizar para GGUF
-
-```bash
+## 4. Convert and Quantize to GGUF
+```
 cd ~/qwen-dpo
 git clone https://github.com/ggerganov/llama.cpp.git
 cd llama.cpp
 pip install -r requirements.txt
 
 python convert-hf-to-gguf.py ../merged_model --outfile qwen-dpo-fp16.gguf --model-base qwen
-./quantize qwen-dpo-fp16.gguf qwen-dpo-q4_k_m.gguf q4_k_m   # ou q5_k_m
-./llama-cli -m qwen-dpo-q4_k_m.gguf -p "Smoke test aqui"
+./quantize qwen-dpo-fp16.gguf qwen-dpo-q4_k_m.gguf q4_k_m
+./llama-cli -m qwen-dpo-q4_k_m.gguf -p "Smoke test here"
 ```
 
----
-
-## 5. Publicar na Deploy VPS
-
-```bash
+## 5. Publish on the Deploy VPS
+```
 scp qwen-dpo-q4_k_m.gguf $DEPLOY_USER@$DEPLOY_HOST:/root/
 ssh $DEPLOY_USER@$DEPLOY_HOST
 mkdir -p /root/qwen-docker/models/backup_$(date +%Y%m%d)
@@ -202,40 +169,33 @@ mv /root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf \
 mv /root/qwen-dpo-q4_k_m.gguf \
    /root/qwen-docker/models/qwen2.5-3b-instruct-q4_k_m.gguf
 ```
+Keep the file name so the existing `docker-compose.yml` keeps working without changes.
 
-Nenhum ajuste no `docker-compose.yml` é necessário, desde que o nome do arquivo permaneça o mesmo.
-
----
-
-## 6. Reiniciar e Validar
-
-```bash
+## 6. Restart and Validate
+```
 docker compose -f /root/qwen-docker/docker-compose.yml restart qwen
 sleep 5
 docker logs qwen-docker-qwen-1 --since=2m
 
 curl http://127.0.0.1:18080/v1/completions \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"Prompt de fumaça pós-deploy"}'
+  -d '{"prompt":"Smoke test after deploy"}'
 ```
-
-Se utilizar proxy/Ollama:
-```bash
+If you use a proxy or the Ollama stack, run a remote test too:
+```
 curl -u "$OLLAMA_BASIC_USER:$OLLAMA_BASIC_PASS" https://$OLLAMA_DOMAIN/api/generate \
   -H 'Content-Type: application/json' \
-  -d '{"model":"web3-qwen-dpo","prompt":"Explique como avaliar o risco de um flash loan em um protocolo DeFi.","stream":false}'
+  -d '{"model":"web3-qwen-dpo","prompt":"Explain how to evaluate flash-loan risk in DeFi.","stream":false}'
 ```
 
----
-
-## 7. Exemplo Opcional – Dataset Neymar
-
-`dataset_dpo_neymar.json` demonstra o formato esperado. Converta para JSONL e siga o mesmo fluxo:
-```bash
+## 7. Optional Example: Neymar Dataset
+The file `dataset_dpo_neymar.json` shows the structure you need. Convert it to JSONL and reuse the same procedure:
+```
 python3 - <<'PY'
 import json
 from pathlib import Path
-data = json.loads(Path('dataset_dpo_neymar.json').read_text())
+content = Path('dataset_dpo_neymar.json').read_text()
+data = json.loads(content)
 with Path('dataset_dpo_neymar.jsonl').open('w') as f:
     for item in data:
         f.write(json.dumps({
@@ -245,16 +205,12 @@ with Path('dataset_dpo_neymar.jsonl').open('w') as f:
         }, ensure_ascii=False) + "\n")
 PY
 ```
-O resto do processo (treino, merge, quantização, deploy) é idêntico.
 
----
+## 8. Good Practices
+1. Save hyperparameters, checkpoints, and metrics in files such as `logs/train-YYYYMMDD.md`.
+2. Keep old GGUF backups until the new model passes all tests.
+3. Automate GPU VPS creation and destruction with tools like Ansible or Terraform if you repeat this workflow often.
+4. Secure external endpoints with a proxy and authentication before exposing the model to users.
 
-## 8. Boas Práticas
-
-- Versione hiperparâmetros e métricas (`logs/train-YYYYMMDD.md`).
-- Mantenha backups dos `.gguf` antigos até concluir testes.
-- Automação: considere scripts Ansible/Terraform para criar e destruir a GPU VPS on-demand.
-- Segurança: exponha a API apenas após proteção com proxy (Caddy/Traefik) e Basic Auth ou OAuth.
-
-Pronto: com esse fluxo, qualquer dataset DPO pode ser treinado na GPU VPS, quantizado e disponibilizado na Deploy VPS sem tocar na stack existente do Ollama.
+Following this flow, you can train any dataset on the GPU VPS, export the GGUF file, and swap it on the Deploy VPS without touching the existing Ollama stack.
 
