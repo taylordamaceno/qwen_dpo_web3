@@ -4,6 +4,18 @@ Proof of Concept for fine-tuning Qwen 2.5 3B Instruct with DPO (Direct Preferenc
 
 This is a small-scale PoC using a tiny dataset (16 examples). The goal is to validate the full pipeline from training to deployment.
 
+## Prerequisites
+
+Make sure your environment (local box, VPS, or GPU instance) has:
+
+- Ubuntu 22.04 LTS (or compatible) with root/SSH access
+- Docker Engine 24+ and Docker Compose Plugin installed
+- Python 3.10+, `pip`, `git`, `git-lfs`, `curl`, and `jq`
+- ~30 GB of free disk space for models and checkpoints
+- Internet access to download dependencies and model weights
+- RunPod (or equivalent GPU provider) credentials for training
+- SSH key already authorized on the deploy VPS
+
 ## Infrastructure
 
 | Component | Provider | Specs | Purpose |
@@ -290,6 +302,17 @@ This is a PoC with a tiny dataset (16 examples). For production:
 2. Train for more epochs
 3. Evaluate model quality before deploying
 4. Keep backups of the original model
+
+
+## Validation via `validate_api.sh`
+
+To validate the fine-tuned model without retyping the `curl` commands, run `validate_api.sh` directly inside the VPS where `llama.cpp` is serving the model:
+
+1. **SSH into the VPS**: `ssh root@YOUR_VPS_IP` (the server only listens on `127.0.0.1:18080`).
+2. **Ensure execution permission**: `chmod +x /root/slm-dpo-fine-tuning/validate_api.sh`.
+3. **Run the script**: `./validate_api.sh`. It fires three batches of questions (dataset, generalization, and negative control), formats the responses, and shows word/character counts.
+4. **Review the criteria**: the final section summarizes what a “good” answer looks like (long, technical, jargon-rich) versus a weak one.
+5. **Iterate when needed**: if answers look poor, redo the train/merge steps, redeploy the `GGUF`, and re-run the script.
 
 ## License
 Taylor Damaceno
