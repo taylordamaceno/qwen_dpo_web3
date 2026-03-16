@@ -3,13 +3,17 @@ set -euo pipefail
 
 ##########################
 # >>> edite estas vars <<<
+# Modelo: Qwen2.5-7B-Instruct (mais novo e free; ~4.4GB em q4_k_m)
 ##########################
 QWEN_DIR="$HOME/qwen-docker"
-MODEL_FILE="qwen2.5-3b-instruct-q4_k_m.gguf"
-# troque a URL abaixo pela do GGUF que você vai usar:
-MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf?download=true"
+# Q4_K_M do 7B é split em 2 shards; o llama.cpp carrega pelo primeiro.
+MODEL_FILE="qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+MODEL_URLS=(
+  "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+  "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"
+)
 LLM_THREADS="8"
-LLM_CTX="2048"
+LLM_CTX="4096"
 LLM_PORT="18080"   # porta interna (somente localhost)
 ##########################
 
@@ -34,15 +38,19 @@ fi
 
 # 2) Diretórios e modelo
 mkdir -p "$QWEN_DIR/models"
-if [ ! -f "$QWEN_DIR/models/$MODEL_FILE" ]; then
-  if [[ "$MODEL_URL" == *"PLACEHOLDER"* ]]; then
-    err "MODEL_URL ainda está placeholder. Edite o script com a URL real do GGUF."
-    exit 1
+missing=0
+for url in "${MODEL_URLS[@]}"; do
+  file_name="$(basename "$url")"
+  if [ ! -f "$QWEN_DIR/models/$file_name" ]; then
+    missing=1
+    ok "Baixando shard GGUF: $file_name"
+    curl -fL "$url" -o "$QWEN_DIR/models/$file_name"
+  else
+    ok "Shard já existe: $QWEN_DIR/models/$file_name"
   fi
-  ok "Baixando modelo GGUF..."
-  curl -fL "$MODEL_URL" -o "$QWEN_DIR/models/$MODEL_FILE"
-else
-  ok "Modelo já existe: $QWEN_DIR/models/$MODEL_FILE"
+done
+if [ "$missing" -eq 0 ]; then
+  ok "Todos os shards do modelo já estavam presentes"
 fi
 
 # 3) docker-compose para o servidor do LLM (exposto só em 127.0.0.1)
@@ -50,21 +58,20 @@ cat > "$QWEN_DIR/docker-compose.yml" <<'YAML'
 version: "3.9"
 services:
   qwen:
-    image: ghcr.io/abetlen/llama-cpp-python:latest
+    image: ghcr.io/ggml-org/llama.cpp:server
     command: >
-      python -m llama_cpp.server
-      --model /models/${MODEL_FILE}
-      --n_ctx ${LLM_CTX}
+      -m /models/${MODEL_FILE}
+      -c ${LLM_CTX}
       --host 127.0.0.1
       --port ${LLM_PORT}
-      --threads ${LLM_THREADS}
-      --verbose
+      -t ${LLM_THREADS}
+      -ngl 0
+      --jinja
     environment:
       - MODEL_FILE=${MODEL_FILE}
       - LLM_CTX=${LLM_CTX}
       - LLM_THREADS=${LLM_THREADS}
       - LLM_PORT=${LLM_PORT}
-      - PYTHONUNBUFFERED=1
     volumes:
       - ./models:/models:ro
     network_mode: "host"     # publica somente em 127.0.0.1:${LLM_PORT}
